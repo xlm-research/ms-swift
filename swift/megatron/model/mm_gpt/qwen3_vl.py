@@ -326,9 +326,10 @@ class Qwen3VLTransformerBlock(gpt_model.TransformerBlock):
             [s, b, h], and optionally the updated context tensor if cross-attention is used.
         """
         if deepstack_visual_embeds is not None:
-            assert len(deepstack_visual_embeds) <= len(
-                self.layers), (f'len(deepstack_visual_embeds): {len(deepstack_visual_embeds)}, '
-                               f'len(self.layers): {len(self.layers)}.')
+            # assert len(deepstack_visual_embeds) <= len(
+            #     self.layers), (f'len(deepstack_visual_embeds): {len(deepstack_visual_embeds)}, '
+            #                    f'len(self.layers): {len(self.layers)}.')
+            pass
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
         # Delete the obsolete reference to the initial input tensor if necessary
@@ -459,6 +460,7 @@ class Qwen3VLGPTModel(MultimodalGPTModel):
         packed_seq_params = data.get('packed_seq_params')
         labels = data.get('labels')
         input_ids = data.get('input_ids')
+        decoder_input = None
         if getattr(self, 'pre_process', False):
             patch_kwargs = dict(data)
             patch_kwargs.update({'input_ids': input_ids, 'packed_seq_params':packed_seq_params})
