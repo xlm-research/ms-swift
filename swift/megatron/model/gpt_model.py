@@ -156,6 +156,8 @@ class GPTModel(McoreGPTModel):
                 attention = layer.transformer_layer.self_attention
                 attention.config = deepcopy(attention.config)
                 attention.config.apply_rope_fusion = False
+    
+
 
     def _patch_apply_rotary_pos_emb(self):
         from megatron.core.transformer import attention
@@ -338,6 +340,7 @@ class GPTModel(McoreGPTModel):
         rotary_pos_emb,
         rotary_pos_cos,
         rotary_pos_sin,
+        mtp_in_postprocess=None,
         loss_mask=None,
         decoder_input=None,
         attention_mask=None,
@@ -366,7 +369,7 @@ class GPTModel(McoreGPTModel):
         if self.share_embeddings_and_output_weights:
             output_weight = self.shared_embedding_or_output_weight()
 
-        if self.mtp_process:
+        if mtp_in_postprocess:
             hidden_states = self.mtp(
                 input_ids=input_ids,
                 position_ids=position_ids,
@@ -381,6 +384,7 @@ class GPTModel(McoreGPTModel):
                 embedding=self.embedding,
                 **(extra_block_kwargs or {}),
             )
+        if self.mtp_process:
             hidden_states_list = torch.chunk(hidden_states, 1 + self.config.mtp_num_layers, dim=0)
             hidden_states = hidden_states_list[0]
 

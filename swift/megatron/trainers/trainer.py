@@ -1,11 +1,13 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 from functools import partial
+import inspect
 from typing import List, Optional
 
 import torch
 import torch.nn
 from megatron.core import mpu
 from megatron.core.rerun_state_machine import get_rerun_state_machine
+from megatron.core.utils import get_attr_wrapped_model
 from megatron.training import get_args, get_timers
 from torch.distributed.nn import all_reduce
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
@@ -132,11 +134,12 @@ class MegatronTrainer(BaseMegatronTrainer):
             },
         )
 
-    def forward_step(self, data_iterator, model):
+    def forward_step(self, data_iterator, model, return_schedule_plan=False):
         timers = get_timers()
 
         # Get the batch.
-        vp_stage = model.module.module.vp_stage
+        vp_stage = get_attr_wrapped_model(model, "vp_stage")
+    
         timers('batch-generator', log_level=2).start()
         with self.stimer(bdata=True):
             data = self.get_batch(data_iterator, vp_stage)
@@ -146,15 +149,9 @@ class MegatronTrainer(BaseMegatronTrainer):
         labels = data.get('labels')
         if self.args.task_type == 'seq_cls':
             data.pop('labels', None)
-        with self.stimer:
-            output_tensor = model(**data)
         packed_seq_params = data.get('packed_seq_params')
         if self.args.task_type == 'seq_cls':
-            loss_func = partial(
-                self.seq_cls_loss_func,
-                labels=labels,
-                packed_seq_params=packed_seq_params,
-                attention_mask=data.get('attention_mask'))
+            loss_func = partial(self.seq_cls_loss_func, labels=labels, packed_seq_params=packed_seq_params)
         else:
             loss_func = partial(
                 self.loss_func,
@@ -162,4 +159,11 @@ class MegatronTrainer(BaseMegatronTrainer):
                 loss_scale=loss_scale,
                 channels=channels,
                 packed_seq_params=packed_seq_params)
-        return output_tensor, loss_func
+
+        if return_schedule_plan:
+            schedule_plan = model.build_schedule_plan(data)
+            return schedule_plan, loss_func
+        else:
+            with self.stimer:
+                output_tensor = model(**data)
+                return output_tensor, loss_func

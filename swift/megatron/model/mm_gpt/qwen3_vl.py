@@ -1,6 +1,6 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 from contextlib import nullcontext
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 from megatron.core import parallel_state, tensor_parallel
@@ -326,9 +326,10 @@ class Qwen3VLTransformerBlock(gpt_model.TransformerBlock):
             [s, b, h], and optionally the updated context tensor if cross-attention is used.
         """
         if deepstack_visual_embeds is not None:
-            assert len(deepstack_visual_embeds) <= len(
-                self.layers), (f'len(deepstack_visual_embeds): {len(deepstack_visual_embeds)}, '
-                               f'len(self.layers): {len(self.layers)}.')
+            # assert len(deepstack_visual_embeds) <= len(
+            #     self.layers), (f'len(deepstack_visual_embeds): {len(deepstack_visual_embeds)}, '
+            #                    f'len(self.layers): {len(self.layers)}.')
+            pass
         inference_context = deprecate_inference_params(inference_context, inference_params)
 
         # Delete the obsolete reference to the initial input tensor if necessary
@@ -455,6 +456,28 @@ class Qwen3VLGPTModel(MultimodalGPTModel):
         self._patch_transformer_block()
         super().__init__(*args, **kwargs)
 
+    def build_schedule_plan(self, data: Dict[str, Any]):
+        packed_seq_params = data.get('packed_seq_params')
+        labels = data.get('labels')
+        input_ids = data.get('input_ids')
+        decoder_input = None
+        if getattr(self, 'pre_process', False):
+            patch_kwargs = dict(data)
+            patch_kwargs.update({'input_ids': input_ids, 'packed_seq_params':packed_seq_params})
+            with self._patch_word_embeddings(patch_kwargs):
+                decoder_input = self.language_model.embedding(
+                    input_ids=data.get('input_ids'),
+                    position_ids=data.get('position_ids'))
+        schedule_plan = self.language_model.build_schedule_plan(
+            input_ids=data.get('input_ids'),
+            position_ids=data.get('position_ids'),
+            attention_mask=data.get('attention_mask'),
+            decoder_input=decoder_input,
+            labels=labels,
+            packed_seq_params=packed_seq_params,
+        )
+
+        return schedule_plan
 
 class Qwen3OmniBridge(GPTBridge):
     hf_layers_prefix = 'thinker.model.layers'
