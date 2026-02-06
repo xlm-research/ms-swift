@@ -877,6 +877,33 @@ def _patch_modelopt():
     checkpointing.save_sharded_modelopt_state = new_save_sharded_modelopt_state
 
 
+def _patch_combined_1f1b_gptmodel_assert():
+    """Allow multimodal wrappers to pass GPTModel assert without Megatron edits.
+
+    The original assert in
+    `Megatron-LM/megatron/core/pipeline_parallel/combined_1f1b.py` (forward_step_func)
+    requires `isinstance(unwrapped_model, GPTModel)`. This patch temporarily replaces
+    `GPTModel` with `(GPTModel, MultimodalGPTModel)` so the check succeeds.
+    """
+    try:
+        from megatron.core.pipeline_parallel import combined_1f1b as _combined_1f1b
+        import megatron.core.models.gpt.gpt_model as _gpt_model_mod
+        from swift.megatron.model.mm_gpt_model import MultimodalGPTModel
+    except Exception:
+        return
+
+    orig_func = _combined_1f1b.combined_forward_backward_step
+
+    def _wrapped(*args, **kwargs):
+        orig_gptmodel = _gpt_model_mod.GPTModel
+        try:
+            _gpt_model_mod.GPTModel = (orig_gptmodel, MultimodalGPTModel)
+            return orig_func(*args, **kwargs)
+        finally:
+            _gpt_model_mod.GPTModel = orig_gptmodel
+    
+    _combined_1f1b.combined_forward_backward_step = _wrapped
+
 def _patch_megatron():
     os.environ.pop('VLLM_USE_MODELSCOPE', None)
     logging_level = logging.root.level
@@ -897,6 +924,7 @@ def _patch_megatron():
     _patch_megatron_timeout()
     _patch_megatron_swanlab()
     _patch_modelopt()
+    _patch_combined_1f1b_gptmodel_assert()
     logging.root.setLevel(logging_level)  # revert logger level
     from swift.megatron import tuners  # patch lora
     try:
