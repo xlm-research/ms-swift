@@ -1,14 +1,18 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
+import hashlib
 import math
+import os
 import multiprocessing as mp
 from itertools import chain
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Union
 
 import numpy as np
+import torch
 import torch.distributed as dist
 from datasets import Dataset as HfDataset
 from torch.utils.data import Dataset, IterableDataset
 from tqdm import tqdm
+from modelscope.hub.utils.utils import get_cache_dir
 
 from swift.utils import get_logger, is_dist, is_master, split_list
 from ..template import MaxLengthError
@@ -157,40 +161,85 @@ class PackingDataset(Dataset):
         self.packing_length = packing_length or self.template.max_length
         self.packing_num_proc = min(packing_num_proc, math.ceil(len(dataset) / self.PACKING_BATCH_SIZE))
         self._out_queue = mp.Queue()
+        self._cache_path = None
         if is_master():
             lengths = self.dataset['length']
-            offset = 0
-            chunked_lengths = split_list(lengths, self.packing_num_proc)
-            for i in range(self.packing_num_proc):
-                worker = mp.Process(
-                    target=self.create_packed_idx, args=(
-                        i,
-                        offset,
-                        chunked_lengths[i],
-                    ), daemon=True)
-                worker.start()
-                offset += len(chunked_lengths[i])
-            self.packed_idx = [[] for _ in range(self.packing_num_proc)]
-            self.packed_length = [[] for _ in range(self.packing_num_proc)]
-            desc = 'Packing: ' if self.packing_num_proc == 1 else f'Packing (num_proc={self.packing_num_proc}): '
-            with tqdm(total=len(lengths), dynamic_ncols=True, desc=desc) as prog_bar:
-                finished_workers = 0
-                while finished_workers < self.packing_num_proc:
-                    rank, sequences, data_len = self._out_queue.get()
-                    if data_len == -1:
-                        finished_workers += 1
-                        continue
-                    prog_bar.update(data_len)
-                    self.packed_idx[rank] += [[x[0] for x in seq] for seq in sequences]
-                    self.packed_length[rank] += [sum(x[1] for x in seq) for seq in sequences]
-            self.packed_idx = list(chain.from_iterable(self.packed_idx))
-            self.packed_length = list(chain.from_iterable(self.packed_length))
+            self._cache_path = self._get_cache_path(lengths)
+            if self.load_from_cache_file and self._try_load_cache():
+                pass
+            else:
+                offset = 0
+                chunked_lengths = split_list(lengths, self.packing_num_proc)
+                for i in range(self.packing_num_proc):
+                    worker = mp.Process(
+                        target=self.create_packed_idx, args=(
+                            i,
+                            offset,
+                            chunked_lengths[i],
+                        ), daemon=True)
+                    worker.start()
+                    offset += len(chunked_lengths[i])
+                self.packed_idx = [[] for _ in range(self.packing_num_proc)]
+                self.packed_length = [[] for _ in range(self.packing_num_proc)]
+                desc = 'Packing: ' if self.packing_num_proc == 1 else f'Packing (num_proc={self.packing_num_proc}): '
+                with tqdm(total=len(lengths), dynamic_ncols=True, desc=desc) as prog_bar:
+                    finished_workers = 0
+                    while finished_workers < self.packing_num_proc:
+                        rank, sequences, data_len = self._out_queue.get()
+                        if data_len == -1:
+                            finished_workers += 1
+                            continue
+                        prog_bar.update(data_len)
+                        self.packed_idx[rank] += [[x[0] for x in seq] for seq in sequences]
+                        self.packed_length[rank] += [sum(x[1] for x in seq) for seq in sequences]
+                self.packed_idx = list(chain.from_iterable(self.packed_idx))
+                self.packed_length = list(chain.from_iterable(self.packed_length))
+                if self.load_from_cache_file:
+                    self._save_cache()
         else:
             self.packed_idx, self.packed_length = None, None
         if dist.is_initialized() and is_dist():
             obj_list = [(self.packed_idx, self.packed_length)]
             dist.broadcast_object_list(obj_list)
             self.packed_idx, self.packed_length = obj_list[0]
+
+    def _get_cache_path(self, lengths):
+        cache_root = os.getenv('SWIFT_PACKING_CACHE') or os.path.join(get_cache_dir(), 'datasets', 'packing_cache')
+        os.makedirs(cache_root, exist_ok=True)
+        lengths_norm = [sum(x) if isinstance(x, list) else x for x in lengths]
+        lengths_arr = np.asarray(lengths_norm, dtype=np.int64)
+        digest = hashlib.sha1()
+        digest.update(lengths_arr.tobytes())
+        digest.update(str(self.packing_length).encode())
+        digest.update(self.template.__class__.__name__.encode())
+        digest.update(str(self.strict).encode())
+        cache_key = digest.hexdigest()
+        return os.path.join(cache_root, f'packing_{cache_key}.pt')
+
+    def _try_load_cache(self):
+        if not self._cache_path or not os.path.exists(self._cache_path):
+            return False
+        try:
+            cached = torch.load(self._cache_path, map_location='cpu')
+            self.packed_idx = cached['packed_idx']
+            self.packed_length = cached['packed_length']
+            logger.info(f'Loaded packing cache: {self._cache_path}')
+            return True
+        except Exception as exc:
+            logger.warning(f'Failed to load packing cache ({self._cache_path}): {exc}')
+            return False
+
+    def _save_cache(self):
+        if not self._cache_path:
+            return
+        try:
+            torch.save(
+                {'packed_idx': self.packed_idx, 'packed_length': self.packed_length},
+                self._cache_path,
+            )
+            logger.info(f'Saved packing cache: {self._cache_path}')
+        except Exception as exc:
+            logger.warning(f'Failed to save packing cache ({self._cache_path}): {exc}')
 
     def create_packed_idx(self, rank, offset, lengths):
         data = [(i + offset, sum(length) if isinstance(length, list) else length) for i, length in enumerate(lengths)]

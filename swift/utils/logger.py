@@ -19,7 +19,7 @@ init_loggers = {}
 
 # old format
 # formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger_format = logging.Formatter('[%(levelname)s:%(name)s] %(message)s')
+logger_format = logging.Formatter('[%(asctime)s-%(levelname)s-%(name)s %(pathname)s:%(lineno)d] %(message)s')
 
 info_set = set()
 warning_set = set()

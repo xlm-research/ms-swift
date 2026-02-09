@@ -5,6 +5,7 @@ from typing import List, Optional, Union
 
 from datasets import Dataset as HfDataset
 
+from swift.llm.utils import is_env_on
 from swift.plugin import extra_callbacks
 from swift.ray import RayHelper
 from swift.trainers import TrainerFactory
@@ -302,6 +303,8 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         return stat_str
 
     def _show_dataset(self, train_dataset, val_dataset):
+        if not is_env_on('SWIFT_PRINT_DATASET'):
+            return
         args = self.args
         predict_with_generate = getattr(args, 'predict_with_generate', False)
         if is_master():

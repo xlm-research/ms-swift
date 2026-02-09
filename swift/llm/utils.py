@@ -360,3 +360,16 @@ def get_packed_seq_params(position_ids: torch.Tensor):
         'max_length_q': max_length,
         'max_length_k': max_length,
     }
+
+def is_env_on(env_name: str) -> bool:
+    value = os.getenv(env_name.upper())
+    if value is None:
+        return False
+    if isinstance(value, str):
+        value = value.strip()
+    if value.lower() in ['true', '1']:
+        return True
+    elif value.lower() in ['false', '0']:
+        return False
+    else:
+        raise ValueError(f'Invalid value for {env_name}: {value}, expected [true, false, 1, 0]')

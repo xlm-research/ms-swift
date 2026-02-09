@@ -322,6 +322,15 @@ def get_padding_to(args):
     if args.context_parallel_size > 1:
         padding_to = (padding_to or 1) * args.context_parallel_size
     origin_padding_to = padding_to
+    # If packing is enabled without padding_free, pad to max_length for fixed shapes.
+    
+    # Userbuffers in tp-comm-overlap requires fixed input sizes. 
+    # NOTE: When using fixed input sizes, padding_free should be set to False.
+    # However, if micro_batch_size is 1, the value of padding_free does not matter.
+    # TODO(yangbo1): but now if setting packing=True, the padding_free is always True,
+    #  and can't set false by passing args.padding_free = False.
+    if getattr(args, "tp_comm_overlap", False) and args.max_length is not None:
+        padding_to = max(padding_to or 1, args.max_length)
     fp8_format = getattr(args, 'fp8_format', None) or getattr(args, 'fp8', None)
     if args.fp8_recipe == 'blockwise':
         padding_to = (padding_to or 1) * 128
